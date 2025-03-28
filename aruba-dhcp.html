@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Aruba DHCP Exclusion Generator</title>
+  <style>
+    body {
+      font-family: sans-serif;
+      padding: 2rem;
+      background: #f9f9f9;
+      color: #222;
+      transition: all 0.3s ease;
+    }
+    body.dark {
+      background: #1e1e1e;
+      color: #ddd;
+    }
+    .header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 1rem;
+    }
+    .dark-toggle {
+      background: #444;
+      color: #fff;
+      padding: 0.4rem 0.8rem;
+      border-radius: 6px;
+      border: none;
+      cursor: pointer;
+    }
+    body.dark .dark-toggle {
+      background: #ccc;
+      color: #111;
+    }
+    .block {
+      background: #fff;
+      border: 1px solid #ddd;
+      padding: 1rem;
+      margin-bottom: 1rem;
+      border-radius: 8px;
+    }
+    body.dark .block {
+      background: #2c2c2c;
+      border-color: #444;
+    }
+    label {
+      display: block;
+      margin-top: 0.5rem;
+    }
+    input {
+      padding: 0.4rem;
+      width: 100%;
+      box-sizing: border-box;
+      margin-top: 0.2rem;
+      background: #fff;
+      color: #000;
+    }
+    body.dark input {
+      background: #444;
+      color: #fff;
+      border: 1px solid #666;
+    }
+    button {
+      margin-top: 1rem;
+      margin-right: 0.5rem;
+      padding: 0.6rem 1rem;
+      background: #0077cc;
+      color: white;
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+    }
+    button:hover {
+      background: #005fa3;
+    }
+    pre {
+      background: #eee;
+      padding: 1rem;
+      white-space: pre-wrap;
+      border-radius: 8px;
+    }
+    body.dark pre {
+      background: #333;
+      color: #ddd;
+    }
+  </style>
+</head>
+<body>
+
+<div class="header">
+  <h1>Aruba DHCP Exclusion Generator</h1>
+  <button class="dark-toggle" onclick="toggleDarkMode()">🌓 Toggle Dark Mode</button>
+</div>
+
+<div id="subnets-container"></div>
+
+<button onclick="addSubnet()">+ Add Subnet</button>
+<button onclick="generateExclusions()">Generate Exclusions</button>
+<button onclick="copyOutput()">Copy to Clipboard</button>
+
+<h2>Output</h2>
+<pre id="output">Waiting for input...</pre>
+
+<script>
+function addSubnet() {
+  const container = document.getElementById("subnets-container");
+  const block = document.createElement("div");
+  block.className = "block";
+  block.innerHTML = `
+    <label>Network (CIDR): <input type="text" class="network" placeholder="e.g. 172.17.128.0/20"></label>
+    <label>DHCP Start IP: <input type="text" class="dhcp-start" placeholder="e.g. 172.17.128.10"></label>
+    <label>DHCP End IP (optional): <input type="text" class="dhcp-end" placeholder="e.g. 172.17.129.255"></label>
+    <label>OR Number of DHCP Hosts (optional): <input type="number" class="dhcp-hosts" placeholder="e.g. 100"></label>
+  `;
+  container.appendChild(block);
+}
+
+function ipToLong(ip) {
+  return ip.split('.').reduce((acc, octet) => (acc << 8) + parseInt(octet), 0);
+}
+
+function longToIp(long) {
+  return [(long >>> 24), (long >> 16 & 255), (long >> 8 & 255), (long & 255)].join('.');
+}
+
+function parseCIDR(cidr) {
+  const [ip, bits] = cidr.split('/');
+  const ipLong = ipToLong(ip);
+  const mask = ~(2 ** (32 - parseInt(bits)) - 1);
+  const network = ipLong & mask;
+  const broadcast = network | ~mask >>> 0;
+  return { network, broadcast };
+}
+
+function generateExclusions() {
+  const output = document.getElementById("output");
+  const blocks = document.querySelectorAll(".block");
+
+  let result = "";
+
+  blocks.forEach((block) => {
+    const network = block.querySelector(".network").value.trim();
+    const dhcpStartStr = block.querySelector(".dhcp-start").value.trim();
+    const dhcpEndStr = block.querySelector(".dhcp-end").value.trim();
+    const hostCountStr = block.querySelector(".dhcp-hosts").value.trim();
+
+    if (!network || !dhcpStartStr) {
+      return;
+    }
+
+    const dhcpStart = ipToLong(dhcpStartStr);
+    let dhcpEnd;
+
+    if (dhcpEndStr) {
+      dhcpEnd = ipToLong(dhcpEndStr);
+    } else if (hostCountStr) {
+      const count = parseInt(hostCountStr);
+      dhcpEnd = dhcpStart + count - 1;
+    } else {
+      return;
+    }
+
+    const { network: netStart, broadcast: netEnd } = parseCIDR(network);
+
+    if (dhcpStart > netEnd || dhcpEnd < netStart || dhcpStart > dhcpEnd) {
+      result += `! Skipping invalid range in ${network}\n!`;
+      return;
+    }
+
+    if (dhcpStart > netStart) {
+      result += "!\n";
+      result += `ip dhcp excluded-address ${longToIp(netStart)} ${longToIp(dhcpStart - 1)}\n`;
+    }
+
+    if (dhcpEnd < netEnd) {
+      result += "!\n";
+      result += `ip dhcp excluded-address ${longToIp(dhcpEnd + 1)} ${longToIp(netEnd)}\n`;
+    }
+
+    result += "!\n";
+  });
+
+  output.textContent = result || "! No exclusions generated.\n!";
+}
+
+function copyOutput() {
+  const text = document.getElementById("output").textContent;
+  navigator.clipboard.writeText(text).then(() => {
+    alert("Exclusions copied to clipboard!");
+  }).catch(() => {
+    alert("Failed to copy output.");
+  });
+}
+
+function toggleDarkMode() {
+  document.body.classList.toggle("dark");
+}
+
+// Add one subnet block on load
+addSubnet();
+</script>
+
+</body>
+</html>
